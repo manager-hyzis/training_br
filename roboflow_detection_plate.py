@@ -379,11 +379,10 @@ print(f"Pipeline configured with {num_classes} classes")
 print("\nStarting model training...")
 print("This may take a while depending on the number of steps and GPU availability")
 
-# Use absolute path for model directory
-model_dir = os.path.abspath('models/research/training/')
+model_dir = '/content/tensorflow-object-detection-faster-rcnn/training/'
 os.makedirs(model_dir, exist_ok=True)
 
-os.chdir('models/research')
+os.chdir('/content/models/research')
 
 train_command = (
     f"python object_detection/model_main.py "
@@ -395,10 +394,9 @@ train_command = (
 )
 
 print(f"Running: {train_command}")
-print(f"Model directory: {model_dir}")
 os.system(train_command)
 
-os.chdir("../..")
+os.chdir('/content')
 
 # ============================================================================
 # STEP 9: EXPORT TRAINED MODEL FOR TFLITE
@@ -406,7 +404,7 @@ os.chdir("../..")
 
 print("\nExporting trained model for TFLite conversion...")
 
-os.chdir('models/research')
+os.chdir('/content/models/research')
 
 output_directory = './fine_tuned_model'
 tflite_directory = './fine_tuned_model/tflite'
