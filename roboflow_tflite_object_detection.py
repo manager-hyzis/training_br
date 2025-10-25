@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """Roboflow TFLite Object Detection - DetectionPlate"""
 
-!pip install protobuf==4.25.2 -q
+import os
+os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
+
+!pip install tensorflow==2.19 protobuf==4.25.3
 
 !curl -L "https://app.roboflow.com/ds/jGKtUsrJON?key=TU7R5jgvdm" > roboflow.zip; unzip -o roboflow.zip; rm roboflow.zip
 
@@ -33,13 +36,13 @@ MODEL = MODELS_CONFIG[selected_model]['model_name']
 pipeline_file = MODELS_CONFIG[selected_model]['pipeline_file']
 batch_size = MODELS_CONFIG[selected_model]['batch_size']
 
-import os
 import shutil
 import glob
 import urllib.request
 import tarfile
 import re
 import numpy as np
+import six.moves.urllib as urllib
 
 os.chdir('/content')
 
@@ -58,17 +61,34 @@ os.chdir('/content/models/research')
 !protoc object_detection/protos/*.proto --python_out=.
 
 os.environ['PYTHONPATH'] += ':/content/models/research/:/content/models/research/slim/'
-os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
-
-!python object_detection/builders/model_builder_test.py
 
 
-!cp -r /content/train/train/ /content/tensorflow-object-detection-faster-rcnn/data/
-!cp -r /content/train/test/ /content/tensorflow-object-detection-faster-rcnn/data/
+!mkdir -p /content/train
+os.chdir('/content/train')
+!curl -L "https://app.roboflow.com/ds/jGKtUsrJON?key=TU7R5jgvdm" > roboflow.zip; unzip -o roboflow.zip; rm roboflow.zip
+
+!ls -la /content/train/
+
+!mkdir -p /content/tensorflow-object-detection-faster-rcnn/data/train
+!mkdir -p /content/tensorflow-object-detection-faster-rcnn/data/test
+
+!find /content/train -name "plates.tfrecord" -type f
+!find /content/train -name "plates_label_map.pbtxt" -type f
+
+!cp $(find /content/train -name "plates.tfrecord" -path "*/train/*" | head -1) /content/tensorflow-object-detection-faster-rcnn/data/train/
+!cp $(find /content/train -name "plates_label_map.pbtxt" -path "*/train/*" | head -1) /content/tensorflow-object-detection-faster-rcnn/data/train/
+!cp $(find /content/train -name "plates.tfrecord" -path "*/test/*" | head -1) /content/tensorflow-object-detection-faster-rcnn/data/test/
 
 test_record_fname = '/content/tensorflow-object-detection-faster-rcnn/data/test/plates.tfrecord'
 train_record_fname = '/content/tensorflow-object-detection-faster-rcnn/data/train/plates.tfrecord'
 label_map_pbtxt_fname = '/content/tensorflow-object-detection-faster-rcnn/data/train/plates_label_map.pbtxt'
+
+assert os.path.isfile(train_record_fname), f'Train TFRecord not found: {train_record_fname}'
+assert os.path.isfile(test_record_fname), f'Test TFRecord not found: {test_record_fname}'
+assert os.path.isfile(label_map_pbtxt_fname), f'Label map not found: {label_map_pbtxt_fname}'
+print(f'✅ Train TFRecord: {train_record_fname}')
+print(f'✅ Test TFRecord: {test_record_fname}')
+print(f'✅ Label map: {label_map_pbtxt_fname}')
 
 MODEL_FILE = MODEL + '.tar.gz'
 DOWNLOAD_BASE = 'http://download.tensorflow.org/models/object_detection/'
@@ -322,10 +342,6 @@ for i, image_path in enumerate(TEST_IMAGE_PATHS):
   --input_arrays=normalized_input_image_tensor \
   --output_arrays=TFLite_Detection_PostProcess,TFLite_Detection_PostProcess:1,TFLite_Detection_PostProcess:2,TFLite_Detection_PostProcess:3 \
   --allow_custom_ops \
-  --inference_type=QUANTIZED_UINT8 \
-  --inference_input_type=QUANTIZED_UINT8 \
-  --mean_values=128 \
-  --std_dev_values=128 \
   --graph_def_file=/content/models/research/fine_tuned_model/tflite/tflite_graph.pb \
   --output_file="/content/models/research/fine_tuned_model/final_model.tflite"
 
