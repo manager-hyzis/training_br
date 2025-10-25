@@ -2,16 +2,39 @@
 """Roboflow TFLite Object Detection - DetectionPlate"""
 
 import os
+from pathlib import Path
+
 os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
 
-!pip install tensorflow==2.19 protobuf==4.25.3
+try:
+    import google.colab  # type: ignore
+    IS_COLAB = True
+except ImportError:  # pragma: no cover
+    IS_COLAB = False
 
-!curl -L "https://app.roboflow.com/ds/jGKtUsrJON?key=TU7R5jgvdm" > roboflow.zip; unzip -o roboflow.zip; rm roboflow.zip
+if IS_COLAB:
+    BASE_DIR = Path('/content')
+else:
+    BASE_DIR = Path('/home/manager/Desktop/training_br')
 
-repo_url = 'https://github.com/roboflow-ai/tensorflow-object-detection-faster-rcnn'
+# GUARD: Se estamos dentro de models/research, volta para BASE_DIR
+current_dir = Path.cwd()
+if 'models/research' in str(current_dir):
+    os.chdir(str(BASE_DIR))
+    print(f"🔄 Voltando para BASE_DIR: {BASE_DIR}")
+
+RESEARCH_DIR = BASE_DIR / 'models' / 'research'
+DATA_ROOT = BASE_DIR / 'data'
+TEST_IMAGES_SRC = BASE_DIR / 'test' / 'test'
+
+print("🔍 Verificando dependências...")
+!pip install tensorflow==2.19 protobuf==4.25.3 -q
 
 num_steps = 100000
 num_eval_steps = 50
+
+print(f"📁 BASE_DIR: {BASE_DIR}")
+print(f"📁 RESEARCH_DIR: {RESEARCH_DIR}")
 
 MODELS_CONFIG = {
     'ssd_mobilenet_v2': {
@@ -44,44 +67,117 @@ import re
 import numpy as np
 import six.moves.urllib as urllib
 
-os.chdir('/content')
+os.chdir(str(BASE_DIR))
 
-repo_dir_path = os.path.abspath(os.path.join('.', os.path.basename(repo_url)))
+if not (BASE_DIR / 'models').exists():
+    print("📥 Clonando TensorFlow models...")
+    !git clone --quiet https://github.com/tensorflow/models.git
+else:
+    print("✅ TensorFlow models já existe")
 
-!git clone {repo_url}
-!git clone --quiet https://github.com/tensorflow/models.git
-
-!pip install tf_slim
-!apt-get install -qq protobuf-compiler python-pil python-lxml python-tk
+print("📦 Instalando dependências do sistema...")
+!pip install tf_slim -q
+!apt-get install -qq protobuf-compiler python-pil python-lxml python-tk 2>/dev/null || true
 !pip install -q Cython contextlib2 pillow lxml matplotlib
 !pip install -q pycocotools
-!pip install lvis==0.5.3
+!pip install lvis==0.5.3 -q
 
-os.chdir('/content/models/research')
-!protoc object_detection/protos/*.proto --python_out=.
+if (RESEARCH_DIR / 'object_detection').exists():
+    print(f"✅ TensorFlow Object Detection já existe em {RESEARCH_DIR}")
+    if not (RESEARCH_DIR / 'object_detection' / 'protos' / 'string_int_label_map_pb2.py').exists():
+        print("🔧 Compilando protos...")
+        os.chdir(str(RESEARCH_DIR))
+        !protoc object_detection/protos/*.proto --python_out=.
+        os.chdir(str(BASE_DIR))
+    else:
+        print("✅ Protos já compilados")
+else:
+    print("⚠️  TensorFlow Object Detection não encontrado!")
 
-os.environ['PYTHONPATH'] += ':/content/models/research/:/content/models/research/slim/'
+pythonpath_extra = f"{str(RESEARCH_DIR)}:{str(RESEARCH_DIR / 'slim')}"
+existing_pythonpath = os.environ.get('PYTHONPATH')
+os.environ['PYTHONPATH'] = (
+    f"{existing_pythonpath}:{pythonpath_extra}" if existing_pythonpath else pythonpath_extra
+)
 
+print("📦 Instalando Roboflow...")
+!pip install roboflow -q
 
-!mkdir -p /content/train
-os.chdir('/content/train')
-!curl -L "https://app.roboflow.com/ds/jGKtUsrJON?key=TU7R5jgvdm" > roboflow.zip; unzip -o roboflow.zip; rm roboflow.zip
+from roboflow import Roboflow
 
-!ls -la /content/train/
+if (DATA_ROOT / 'train' / 'plates.tfrecord').exists() and (DATA_ROOT / 'test' / 'plates.tfrecord').exists():
+    print("✅ Dataset TFRecord já existe, pulando download...")
+    dataset_root = DATA_ROOT
+else:
+    print("📥 Baixando dataset Roboflow...")
+    rf = Roboflow(api_key="SDfnuMydLG5k2Nq7dlny")
+    project = rf.workspace("olhodeaguia").project("detectionplate-soevy")
+    version = project.version(11)
+    dataset = version.download("tfrecord", location=str(BASE_DIR / 'train'))
+    print(f"✅ Dataset baixado em: {dataset.location}")
+    dataset_root = Path(dataset.location)
 
-!mkdir -p /content/tensorflow-object-detection-faster-rcnn/data/train
-!mkdir -p /content/tensorflow-object-detection-faster-rcnn/data/test
+train_dest_dir = DATA_ROOT / 'train'
+test_dest_dir = DATA_ROOT / 'test'
+train_dest_dir.mkdir(parents=True, exist_ok=True)
+test_dest_dir.mkdir(parents=True, exist_ok=True)
 
-!find /content/train -name "plates.tfrecord" -type f
-!find /content/train -name "plates_label_map.pbtxt" -type f
+def _find_tfrecord(root: Path, subset: str) -> Path:
+    subset_aliases = {
+        'train': {'train', 'training'},
+        'test': {'test', 'testing'},
+        'val': {'val', 'valid', 'validation'}
+    }
+    aliases = subset_aliases.get(subset, {subset})
+    candidates = []
+    for path in root.rglob('*.tfrecord'):
+        parts_lower = {part.lower() for part in path.parts}
+        stem_lower = path.stem.lower()
+        if parts_lower & aliases or any(alias in stem_lower for alias in aliases):
+            candidates.append(path)
+    if not candidates:
+        candidates = list(root.rglob('*.tfrecord'))
+    if not candidates:
+        raise FileNotFoundError(f"No TFRecord files found in {root}")
+    return candidates[0]
 
-!cp $(find /content/train -name "plates.tfrecord" -path "*/train/*" | head -1) /content/tensorflow-object-detection-faster-rcnn/data/train/
-!cp $(find /content/train -name "plates_label_map.pbtxt" -path "*/train/*" | head -1) /content/tensorflow-object-detection-faster-rcnn/data/train/
-!cp $(find /content/train -name "plates.tfrecord" -path "*/test/*" | head -1) /content/tensorflow-object-detection-faster-rcnn/data/test/
+def _find_label_map(root: Path) -> Path:
+    candidates = list(root.rglob('*label_map.pbtxt'))
+    if not candidates:
+        raise FileNotFoundError(f"No label map (.pbtxt) found in {root}")
+    # Prefer file inside train subset if available
+    for candidate in candidates:
+        if 'train' in {part.lower() for part in candidate.parts}:
+            return candidate
+    return candidates[0]
 
-test_record_fname = '/content/tensorflow-object-detection-faster-rcnn/data/test/plates.tfrecord'
-train_record_fname = '/content/tensorflow-object-detection-faster-rcnn/data/train/plates.tfrecord'
-label_map_pbtxt_fname = '/content/tensorflow-object-detection-faster-rcnn/data/train/plates_label_map.pbtxt'
+train_record_src = _find_tfrecord(dataset_root, 'train')
+test_record_src = _find_tfrecord(dataset_root, 'test')
+if not test_record_src:
+    test_record_src = _find_tfrecord(dataset_root, 'val')
+train_label_src = _find_label_map(dataset_root)
+
+if str(train_record_src) != str(train_dest_dir / 'plates.tfrecord'):
+    shutil.copy(train_record_src, train_dest_dir / 'plates.tfrecord')
+    print(f"✅ Copiado: {train_record_src.name}")
+else:
+    print(f"✅ Train TFRecord já está no lugar correto")
+
+if str(train_label_src) != str(train_dest_dir / 'plates_label_map.pbtxt'):
+    shutil.copy(train_label_src, train_dest_dir / 'plates_label_map.pbtxt')
+    print(f"✅ Copiado: {train_label_src.name}")
+else:
+    print(f"✅ Label map já está no lugar correto")
+
+if str(test_record_src) != str(test_dest_dir / 'plates.tfrecord'):
+    shutil.copy(test_record_src, test_dest_dir / 'plates.tfrecord')
+    print(f"✅ Copiado: {test_record_src.name}")
+else:
+    print(f"✅ Test TFRecord já está no lugar correto")
+
+test_record_fname = str(test_dest_dir / 'plates.tfrecord')
+train_record_fname = str(train_dest_dir / 'plates.tfrecord')
+label_map_pbtxt_fname = str(train_dest_dir / 'plates_label_map.pbtxt')
 
 assert os.path.isfile(train_record_fname), f'Train TFRecord not found: {train_record_fname}'
 assert os.path.isfile(test_record_fname), f'Test TFRecord not found: {test_record_fname}'
@@ -92,24 +188,41 @@ print(f'✅ Label map: {label_map_pbtxt_fname}')
 
 MODEL_FILE = MODEL + '.tar.gz'
 DOWNLOAD_BASE = 'http://download.tensorflow.org/models/object_detection/'
-DEST_DIR = '/content/models/research/pretrained_model'
+DEST_DIR = str(RESEARCH_DIR / 'pretrained_model')
 
-if not (os.path.exists(MODEL_FILE)):
-    urllib.request.urlretrieve(DOWNLOAD_BASE + MODEL_FILE, MODEL_FILE)
-
-tar = tarfile.open(MODEL_FILE)
-tar.extractall()
-tar.close()
-
-os.remove(MODEL_FILE)
-if (os.path.exists(DEST_DIR)):
-    shutil.rmtree(DEST_DIR)
-
-if os.path.exists(MODEL):
-    os.rename(MODEL, DEST_DIR)
+if (RESEARCH_DIR / 'pretrained_model' / 'model.ckpt.meta').exists():
+    print(f"✅ Modelo pré-treinado já existe em {DEST_DIR}")
 else:
-    print(f"Error: {MODEL} not found after extraction")
-    print(f"Available files: {os.listdir('.')}")
+    print(f"📥 Baixando modelo pré-treinado {MODEL}...")
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            if not (os.path.exists(MODEL_FILE)) or os.path.getsize(MODEL_FILE) < 1000000:
+                print(f"  Tentativa {attempt + 1}/{max_retries}...")
+                urllib.request.urlretrieve(DOWNLOAD_BASE + MODEL_FILE, MODEL_FILE)
+            
+            tar = tarfile.open(MODEL_FILE)
+            tar.extractall()
+            tar.close()
+            break
+        except (EOFError, tarfile.ReadError, urllib.error.URLError) as e:
+            print(f"  ❌ Erro ao baixar/extrair: {e}")
+            if os.path.exists(MODEL_FILE):
+                os.remove(MODEL_FILE)
+            if attempt == max_retries - 1:
+                raise ValueError(f"Falha ao baixar modelo após {max_retries} tentativas")
+            continue
+    
+    os.remove(MODEL_FILE)
+    if (os.path.exists(DEST_DIR)):
+        shutil.rmtree(DEST_DIR)
+    
+    if os.path.exists(MODEL):
+        os.rename(MODEL, DEST_DIR)
+        print(f"✅ Modelo extraído para {DEST_DIR}")
+    else:
+        print(f"❌ Error: {MODEL} not found after extraction")
+        print(f"Available files: {os.listdir('.')}")
 
 !echo {DEST_DIR}
 !ls -alh {DEST_DIR}
@@ -118,7 +231,7 @@ fine_tune_checkpoint = os.path.join(DEST_DIR, "model.ckpt")
 fine_tune_checkpoint
 
 
-pipeline_fname = os.path.join('/content/models/research/object_detection/samples/configs/', pipeline_file)
+pipeline_fname = str(RESEARCH_DIR / 'object_detection' / 'samples' / 'configs' / pipeline_file)
 
 assert os.path.isfile(pipeline_fname), '`{}` not exist'.format(pipeline_fname)
 
@@ -164,7 +277,7 @@ with open(pipeline_fname, 'w') as f:
 
 !cat {pipeline_fname}
 
-model_dir = '/content/models/research/training/'
+model_dir = str(RESEARCH_DIR / 'training')
 os.makedirs(model_dir, exist_ok=True)
 
 !wget https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip
@@ -179,36 +292,36 @@ get_ipython().system_raw(
 get_ipython().system_raw('./ngrok http 6006 &')
 
 
-!python /content/models/research/object_detection/model_main.py \
+!python {RESEARCH_DIR}/object_detection/model_main_tf2.py \
     --pipeline_config_path={pipeline_fname} \
     --model_dir={model_dir} \
     --alsologtostderr \
     --num_train_steps={num_steps} \
-    --num_eval_steps={num_eval_steps}
+    --sample_1_of_n_eval_examples=1
 
 !ls {model_dir}
 
 
-output_directory = '/content/models/research/fine_tuned_model'
-tflite_directory = '/content/models/research/fine_tuned_model/tflite'
+output_directory = str(RESEARCH_DIR / 'fine_tuned_model')
+tflite_directory = str(RESEARCH_DIR / 'fine_tuned_model' / 'tflite')
 
-lst = os.listdir(model_dir)
-lst = [l for l in lst if 'model.ckpt-' in l and '.meta' in l]
-steps = np.array([int(re.findall('\d+', l)[0]) for l in lst])
-last_model = lst[steps.argmax()].replace('.meta', '')
+import tensorflow as tf
 
-last_model_path = os.path.join(model_dir, last_model)
-print(last_model_path)
-!python /content/models/research/object_detection/export_inference_graph.py \
+latest_checkpoint = tf.train.latest_checkpoint(model_dir)
+if latest_checkpoint is None:
+    raise ValueError(f'No checkpoints found in {model_dir}. Run the training cell first to generate model checkpoints.')
+print(f'Using checkpoint: {latest_checkpoint}')
+
+!python {str(RESEARCH_DIR)}/object_detection/exporter_main_v2.py \
     --input_type=image_tensor \
     --pipeline_config_path={pipeline_fname} \
-    --output_directory={output_directory} \
-    --trained_checkpoint_prefix={last_model_path}
-!python /content/models/research/object_detection/export_tflite_ssd_graph.py \
-    --input_type=image_tensor \
+    --trained_checkpoint_dir={model_dir} \
+    --output_directory={output_directory}
+
+!python {str(RESEARCH_DIR)}/object_detection/export_tflite_graph_tf2.py \
     --pipeline_config_path={pipeline_fname} \
-    --output_directory={tflite_directory} \
-    --trained_checkpoint_prefix={last_model_path}
+    --trained_checkpoint_dir={model_dir} \
+    --output_directory={tflite_directory}
 
 !ls {output_directory}
 
@@ -217,7 +330,8 @@ pb_fname = os.path.join(os.path.abspath(output_directory), "frozen_inference_gra
 print(pb_fname)
 assert os.path.isfile(pb_fname), '`{}` not exist'.format(pb_fname)
 
-!cp -r /content/test/test/ /content/tensorflow-object-detection-faster-rcnn/
+if TEST_IMAGES_SRC.exists():
+    shutil.copytree(TEST_IMAGES_SRC, DATA_ROOT.parent / 'test', dirs_exist_ok=True)
 
 PATH_TO_CKPT = pb_fname
 PATH_TO_LABELS = label_map_pbtxt_fname
@@ -229,7 +343,7 @@ TEST_IMAGE_PATHS = glob.glob(os.path.join(PATH_TO_TEST_IMAGES_DIR, "*.*"))
 assert len(TEST_IMAGE_PATHS) > 0, 'No image found in `{}`.'.format(PATH_TO_TEST_IMAGES_DIR)
 print(TEST_IMAGE_PATHS)
 
-!ls /content/tensorflow-object-detection-faster-rcnn/
+!ls {str(BASE_DIR / 'tensorflow-object-detection-faster-rcnn')}
 
 
 import six.moves.urllib as urllib
@@ -342,13 +456,58 @@ for i, image_path in enumerate(TEST_IMAGE_PATHS):
   --input_arrays=normalized_input_image_tensor \
   --output_arrays=TFLite_Detection_PostProcess,TFLite_Detection_PostProcess:1,TFLite_Detection_PostProcess:2,TFLite_Detection_PostProcess:3 \
   --allow_custom_ops \
-  --graph_def_file=/content/models/research/fine_tuned_model/tflite/tflite_graph.pb \
-  --output_file="/content/models/research/fine_tuned_model/final_model.tflite"
+  --graph_def_file={tflite_directory}/tflite_graph.pb \
+  --output_file="{str(RESEARCH_DIR)}/fine_tuned_model/final_model.tflite"
 
-from google.colab import drive
-drive.mount('/content/drive')
+if IS_COLAB:
+    from google.colab import drive
+    drive.mount('/content/drive')
+    # Change the final TFLite destination here
+    !cp {str(RESEARCH_DIR)}/fine_tuned_model/final_model.tflite "/content/drive/My Drive/"
+else:
+    print(f"✅ TFLite model saved to: {str(RESEARCH_DIR)}/fine_tuned_model/final_model.tflite")
+    print(f"📁 Copy it manually from {str(RESEARCH_DIR)}/fine_tuned_model/ to your desired location.")
 
-# Change the final TFLite destination here
-!cp /content/models/research/fine_tuned_model/final_model.tflite "/content/drive/My Drive/"
+import zipfile
+from datetime import datetime
+
+print("\n" + "="*60)
+print("📦 COMPACTANDO ARTEFATOS DE TREINAMENTO...")
+print("="*60)
+
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+zip_filename = f"training_artifacts_{timestamp}.zip"
+zip_path = BASE_DIR / zip_filename
+
+artifacts_to_backup = [
+    RESEARCH_DIR / 'training',
+    RESEARCH_DIR / 'fine_tuned_model',
+    DATA_ROOT,
+]
+
+with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+    for artifact_dir in artifacts_to_backup:
+        if artifact_dir.exists():
+            print(f"  ➕ Adicionando {artifact_dir.name}...")
+            for root, dirs, files in os.walk(artifact_dir):
+                for file in files:
+                    file_path = Path(root) / file
+                    arcname = file_path.relative_to(BASE_DIR)
+                    zipf.write(file_path, arcname)
+        else:
+            print(f"  ⚠️  {artifact_dir.name} não encontrado, pulando...")
+
+zip_size_mb = zip_path.stat().st_size / (1024 * 1024)
+print(f"\n✅ Arquivo compactado: {zip_filename}")
+print(f"📊 Tamanho: {zip_size_mb:.2f} MB")
+
+if IS_COLAB:
+    print("\n📥 Iniciando download do Colab...")
+    from google.colab import files
+    files.download(str(zip_path))
+    print("✅ Download concluído!")
+else:
+    print(f"\n📁 Arquivo salvo em: {zip_path}")
+    print("💾 Copie manualmente para seu computador ou nuvem.")
 
 """Your TFLite file is now in your Drive as "final_model.tflite", ready to use with your project on-device! For specific device tutorials, check out the official TensorFlow Lite [Android Demo](https://github.com/tensorflow/examples/tree/master/lite/examples/object_detection/android), [iOS Demo](https://github.com/tensorflow/examples/tree/master/lite/examples/object_detection/ios), or [Raspberry Pi Demo](https://github.com/tensorflow/examples/tree/master/lite/examples/object_detection/raspberry_pi). [link text](https://)"""
