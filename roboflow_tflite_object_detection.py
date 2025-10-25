@@ -3,7 +3,7 @@
 
 !pip install protobuf==4.25.2 -q
 
-!curl -L "https://app.roboflow.com/ds/jGKtUsrJON?key=TU7R5jgvdm" > roboflow.zip; unzip roboflow.zip; rm roboflow.zip
+!curl -L "https://app.roboflow.com/ds/jGKtUsrJON?key=TU7R5jgvdm" > roboflow.zip; unzip -o roboflow.zip; rm roboflow.zip
 
 repo_url = 'https://github.com/roboflow-ai/tensorflow-object-detection-faster-rcnn'
 
@@ -34,30 +34,31 @@ pipeline_file = MODELS_CONFIG[selected_model]['pipeline_file']
 batch_size = MODELS_CONFIG[selected_model]['batch_size']
 
 import os
+import shutil
+import glob
+import urllib.request
+import tarfile
+import re
+import numpy as np
+
+os.chdir('/content')
 
 repo_dir_path = os.path.abspath(os.path.join('.', os.path.basename(repo_url)))
 
 !git clone {repo_url}
-# %cd {repo_dir_path}
-!git pull
-
 !git clone --quiet https://github.com/tensorflow/models.git
 
 !pip install tf_slim
-
 !apt-get install -qq protobuf-compiler python-pil python-lxml python-tk
-
 !pip install -q Cython contextlib2 pillow lxml matplotlib
-
 !pip install -q pycocotools
-
 !pip install lvis==0.5.3
 
-# %cd /content/models/research
+os.chdir('/content/models/research')
 !protoc object_detection/protos/*.proto --python_out=.
 
-import os
 os.environ['PYTHONPATH'] += ':/content/models/research/:/content/models/research/slim/'
+os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
 
 !python object_detection/builders/model_builder_test.py
 
@@ -69,12 +70,6 @@ test_record_fname = '/content/tensorflow-object-detection-faster-rcnn/data/test/
 train_record_fname = '/content/tensorflow-object-detection-faster-rcnn/data/train/plates.tfrecord'
 label_map_pbtxt_fname = '/content/tensorflow-object-detection-faster-rcnn/data/train/plates_label_map.pbtxt'
 
-
-import os
-import shutil
-import glob
-import urllib.request
-import tarfile
 MODEL_FILE = MODEL + '.tar.gz'
 DOWNLOAD_BASE = 'http://download.tensorflow.org/models/object_detection/'
 DEST_DIR = '/content/models/research/pretrained_model'
@@ -89,7 +84,12 @@ tar.close()
 os.remove(MODEL_FILE)
 if (os.path.exists(DEST_DIR)):
     shutil.rmtree(DEST_DIR)
-os.rename(MODEL, DEST_DIR)
+
+if os.path.exists(MODEL):
+    os.rename(MODEL, DEST_DIR)
+else:
+    print(f"Error: {MODEL} not found after extraction")
+    print(f"Available files: {os.listdir('.')}")
 
 !echo {DEST_DIR}
 !ls -alh {DEST_DIR}
@@ -98,7 +98,6 @@ fine_tune_checkpoint = os.path.join(DEST_DIR, "model.ckpt")
 fine_tune_checkpoint
 
 
-import os
 pipeline_fname = os.path.join('/content/models/research/object_detection/samples/configs/', pipeline_file)
 
 assert os.path.isfile(pipeline_fname), '`{}` not exist'.format(pipeline_fname)
@@ -110,8 +109,6 @@ def get_num_classes(pbtxt_fname):
         label_map, max_num_classes=90, use_display_name=True)
     category_index = label_map_util.create_category_index(categories)
     return len(category_index.keys())
-
-import re
 
 num_classes = get_num_classes(label_map_pbtxt_fname)
 with open(pipeline_fname) as f:
@@ -147,7 +144,8 @@ with open(pipeline_fname, 'w') as f:
 
 !cat {pipeline_fname}
 
-model_dir = 'training/'
+model_dir = '/content/models/research/training/'
+os.makedirs(model_dir, exist_ok=True)
 
 !wget https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip
 !unzip -o ngrok-stable-linux-amd64.zip
@@ -171,15 +169,12 @@ get_ipython().system_raw('./ngrok http 6006 &')
 !ls {model_dir}
 
 
-import re
-import numpy as np
-
-output_directory = './fine_tuned_model'
-tflite_directory = './fine_tuned_model/tflite'
+output_directory = '/content/models/research/fine_tuned_model'
+tflite_directory = '/content/models/research/fine_tuned_model/tflite'
 
 lst = os.listdir(model_dir)
 lst = [l for l in lst if 'model.ckpt-' in l and '.meta' in l]
-steps=np.array([int(re.findall('\d+', l)[0]) for l in lst])
+steps = np.array([int(re.findall('\d+', l)[0]) for l in lst])
 last_model = lst[steps.argmax()].replace('.meta', '')
 
 last_model_path = os.path.join(model_dir, last_model)
@@ -198,17 +193,11 @@ print(last_model_path)
 !ls {output_directory}
 
 
-import os
-
 pb_fname = os.path.join(os.path.abspath(output_directory), "frozen_inference_graph.pb")
 print(pb_fname)
 assert os.path.isfile(pb_fname), '`{}` not exist'.format(pb_fname)
 
-
 !cp -r /content/test/test/ /content/tensorflow-object-detection-faster-rcnn/
-
-import os
-import glob
 
 PATH_TO_CKPT = pb_fname
 PATH_TO_LABELS = label_map_pbtxt_fname
@@ -223,11 +212,8 @@ print(TEST_IMAGE_PATHS)
 !ls /content/tensorflow-object-detection-faster-rcnn/
 
 
-import numpy as np
-import os
 import six.moves.urllib as urllib
 import sys
-import tarfile
 import tensorflow as tf
 import zipfile
 
@@ -238,10 +224,7 @@ from PIL import Image
 
 sys.path.append("..")
 from object_detection.utils import ops as utils_ops
-
-
 from object_detection.utils import label_map_util
-
 from object_detection.utils import visualization_utils as vis_util
 
 detection_graph = tf.Graph()
